@@ -1,0 +1,781 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FlowNotes - Documentação de Workflows</title>
+    <style>
+        :root {
+            --bg-color: #f4f4f9;
+            --dot-color: #e0e0e0;
+            --primary: #4f46e5;
+            --primary-hover: #4338ca;
+            --text-color: #1f2937;
+            --card-bg: #ffffff;
+            --card-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+            --card-border: #e5e7eb;
+            --header-height: 60px;
+        }
+
+        * { box-sizing: border-box; outline: none; }
+
+        body, html {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            font-family: 'Segoe UI', system-ui, sans-serif;
+            background-color: var(--bg-color);
+            overflow: hidden; /* Impede scroll nativo, usaremos canvas pan */
+            color: var(--text-color);
+        }
+
+        /* UI Overlay (Header) */
+        header {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: var(--header-height);
+            background: rgba(255, 255, 255, 0.9);
+            backdrop-filter: blur(5px);
+            border-bottom: 1px solid var(--card-border);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 0 20px;
+            z-index: 1000;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+        }
+
+        .logo {
+            font-weight: 700;
+            font-size: 1.2rem;
+            color: var(--primary);
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .toolbar {
+            display: flex;
+            gap: 10px;
+        }
+
+        button {
+            background: white;
+            border: 1px solid var(--card-border);
+            color: var(--text-color);
+            padding: 8px 12px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 0.9rem;
+            transition: all 0.2s;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            font-weight: 500;
+        }
+
+        button:hover {
+            background: #f9fafb;
+            border-color: #d1d5db;
+        }
+
+        button.primary {
+            background: var(--primary);
+            color: white;
+            border: none;
+        }
+
+        button.primary:hover {
+            background: var(--primary-hover);
+        }
+
+        button.danger {
+            color: #ef4444;
+            border-color: #fecaca;
+        }
+        
+        button.danger:hover {
+            background: #fef2f2;
+        }
+
+        /* Área de Trabalho (Workspace) */
+        #workspace-container {
+            width: 100vw;
+            height: 100vh;
+            position: relative;
+            cursor: grab;
+            overflow: hidden;
+        }
+
+        #workspace-container.grabbing {
+            cursor: grabbing;
+        }
+
+        /* O "Mundo" que contem nós e linhas, transformado por scale/translate */
+        #world {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 0;
+            height: 0;
+            transform-origin: 0 0;
+            /* O background pontilhado é aplicado aqui para mover junto */
+            background-image: radial-gradient(var(--dot-color) 1px, transparent 1px);
+            background-size: 20px 20px;
+        }
+
+        /* Canvas para as linhas de conexão */
+        svg#connections {
+            position: absolute;
+            top: 0;
+            left: 0;
+            overflow: visible;
+            pointer-events: none; /* Deixa cliques passarem para o fundo */
+            z-index: 1;
+        }
+
+        path.connection-line {
+            fill: none;
+            stroke: #9ca3af;
+            stroke-width: 2;
+            transition: stroke 0.2s;
+        }
+
+        path.connection-line:hover {
+            stroke: var(--primary);
+            stroke-width: 3;
+            cursor: pointer;
+            pointer-events: stroke;
+        }
+
+        /* Nós (Cartões) */
+        .node {
+            position: absolute;
+            width: 240px;
+            background: var(--card-bg);
+            border: 1px solid var(--card-border);
+            border-radius: 8px;
+            box-shadow: var(--card-shadow);
+            display: flex;
+            flex-direction: column;
+            z-index: 2;
+            transition: box-shadow 0.2s, border-color 0.2s;
+        }
+
+        .node.selected {
+            border: 2px solid var(--primary);
+            box-shadow: 0 0 0 4px rgba(79, 70, 229, 0.1);
+        }
+
+        .node-header {
+            padding: 8px 12px;
+            background: #f9fafb;
+            border-bottom: 1px solid var(--card-border);
+            border-radius: 8px 8px 0 0;
+            font-size: 0.8rem;
+            color: #6b7280;
+            font-weight: 600;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            cursor: move; /* Indica que pode arrastar pelo cabeçalho */
+            user-select: none;
+        }
+
+        .node-content {
+            padding: 12px;
+            min-height: 100px;
+        }
+
+        textarea.node-text {
+            width: 100%;
+            height: 100%;
+            min-height: 80px;
+            border: none;
+            resize: vertical;
+            font-family: inherit;
+            font-size: 0.95rem;
+            color: #374151;
+            background: transparent;
+            line-height: 1.5;
+        }
+
+        /* Handle de conexão (bolinha na direita) */
+        .connection-handle {
+            width: 12px;
+            height: 12px;
+            background: var(--primary);
+            border-radius: 50%;
+            position: absolute;
+            right: -6px;
+            top: 50%;
+            transform: translateY(-50%);
+            cursor: crosshair;
+            opacity: 0;
+            transition: opacity 0.2s;
+            z-index: 10;
+        }
+
+        .node:hover .connection-handle {
+            opacity: 1;
+        }
+
+        .connection-handle:hover {
+            transform: translateY(-50%) scale(1.2);
+        }
+
+        /* Botão deletar no nó */
+        .delete-node-btn {
+            background: none;
+            border: none;
+            color: #9ca3af;
+            cursor: pointer;
+            padding: 2px;
+            font-size: 1.1rem;
+            line-height: 1;
+        }
+        .delete-node-btn:hover {
+            color: #ef4444;
+            background: none;
+        }
+
+        /* Notificações (Toast) */
+        #toast-container {
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            z-index: 2000;
+            pointer-events: none;
+        }
+
+        .toast {
+            background: #1f2937;
+            color: white;
+            padding: 10px 16px;
+            border-radius: 6px;
+            font-size: 0.9rem;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+            opacity: 0;
+            transform: translateY(20px);
+            transition: all 0.3s ease;
+        }
+        .toast.show {
+            opacity: 1;
+            transform: translateY(0);
+        }
+
+        /* Input de arquivo oculto */
+        #file-input { display: none; }
+
+        /* Modal de Ajuda */
+        .modal-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0,0,0,0.5);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            z-index: 3000;
+            opacity: 0;
+            pointer-events: none;
+            transition: opacity 0.2s;
+        }
+        .modal-overlay.open {
+            opacity: 1;
+            pointer-events: auto;
+        }
+        .modal {
+            background: white;
+            padding: 24px;
+            border-radius: 12px;
+            width: 90%;
+            max-width: 500px;
+            box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1);
+        }
+        .modal h2 { margin-top: 0; color: var(--primary); }
+        .modal ul { line-height: 1.6; padding-left: 20px; }
+        .modal-close { margin-top: 20px; width: 100%; justify-content: center; }
+
+    </style>
+</head>
+<body>
+
+    <header>
+        <div class="logo">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7"></rect><rect x="14" y="3" width="7" height="7"></rect><rect x="14" y="14" width="7" height="7"></rect><rect x="3" y="14" width="7" height="7"></rect></svg>
+            FlowNotes
+        </div>
+        <div class="toolbar">
+            <button onclick="app.addNode()" class="primary">
+                <span>+</span> Novo Cartão
+            </button>
+            <button onclick="app.clearWorkspace()" class="danger">
+                Limpar
+            </button>
+            <div style="width: 1px; background: #e5e7eb; margin: 0 4px;"></div>
+            <button onclick="app.exportData()">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
+                Exportar
+            </button>
+            <button onclick="document.getElementById('file-input').click()">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="17 8 12 3 7 8"></polyline><line x1="12" y1="3" x2="12" y2="15"></line></svg>
+                Importar
+            </button>
+            <button onclick="app.toggleHelp()">?</button>
+        </div>
+    </header>
+
+    <div id="workspace-container">
+        <div id="world">
+            <svg id="connections" width="5000" height="5000"></svg>
+            <!-- Os nós serão inseridos aqui via JS -->
+            <div id="nodes-layer"></div>
+        </div>
+    </div>
+
+    <input type="file" id="file-input" accept=".json" onchange="app.importData(this)">
+
+    <div id="toast-container"></div>
+
+    <!-- Modal de Ajuda -->
+    <div id="help-modal" class="modal-overlay">
+        <div class="modal">
+            <h2>Como usar o FlowNotes</h2>
+            <ul>
+                <li><strong>Adicionar:</strong> Clique em "Novo Cartão".</li>
+                <li><strong>Mover:</strong> Arraste o cabeçalho do cartão.</li>
+                <li><strong>Pan (Mover tela):</strong> Clique e arraste em uma área vazia.</li>
+                <li><strong>Zoom:</strong> Use a roda do mouse.</li>
+                <li><strong>Conectar:</strong> Passe o mouse na lateral direita de um cartão, clique na bolinha azul e arraste até outro cartão.</li>
+                <li><strong>Deletar:</strong> Clique no "X" no canto do cartão. Clique em uma linha (ela ficará azul) e pressione Delete para remover a conexão.</li>
+            </ul>
+            <button class="primary modal-close" onclick="app.toggleHelp()">Entendi</button>
+        </div>
+    </div>
+
+    <script>
+        // Classe Principal da Aplicação
+        class FlowApp {
+            constructor() {
+                // Estado
+                this.nodes = [];
+                this.connections = []; // { id, from, to }
+                this.view = { x: 0, y: 0, zoom: 1 };
+                this.nextNodeId = 1;
+                
+                // Dragging State
+                this.isDraggingNode = false;
+                this.draggedNodeId = null;
+                this.dragOffset = { x: 0, y: 0 };
+                
+                this.isPanning = false;
+                this.panStart = { x: 0, y: 0 };
+                
+                this.isConnecting = false;
+                this.connectionStartNodeId = null;
+                this.tempLine = null; // Elemento SVG temporário
+
+                // DOM Elements
+                this.container = document.getElementById('workspace-container');
+                this.world = document.getElementById('world');
+                this.nodesLayer = document.getElementById('nodes-layer');
+                this.svgLayer = document.getElementById('connections');
+                
+                this.initEvents();
+                this.updateTransform();
+                this.showToast('Bem-vindo ao FlowNotes!');
+            }
+
+            // --- Gerenciamento de Estado ---
+
+            addNode(x = null, y = null, content = '') {
+                // Centraliza na tela se x,y não fornecidos
+                if (x === null || y === null) {
+                    const rect = this.container.getBoundingClientRect();
+                    // Converter coordenadas de tela para coordenadas do mundo
+                    x = (rect.width / 2 - this.view.x) / this.view.zoom - 120; // 120 é metade da largura
+                    y = (rect.height / 2 - this.view.y) / this.view.zoom - 50;
+                }
+
+                const node = {
+                    id: 'node-' + Date.now() + '-' + (this.nextNodeId++),
+                    x: x,
+                    y: y,
+                    content: content || 'Nova ideia...'
+                };
+
+                this.nodes.push(node);
+                this.renderNode(node);
+            }
+
+            deleteNode(id) {
+                // Remover nó
+                this.nodes = this.nodes.filter(n => n.id !== id);
+                // Remover conexões associadas
+                this.connections = this.connections.filter(c => c.from !== id && c.to !== id);
+                
+                // Atualizar DOM
+                const el = document.getElementById(id);
+                if (el) el.remove();
+                this.renderConnections();
+            }
+
+            clearWorkspace() {
+                if(confirm('Tem certeza que deseja limpar tudo?')) {
+                    this.nodes = [];
+                    this.connections = [];
+                    this.nodesLayer.innerHTML = '';
+                    this.renderConnections();
+                    this.showToast('Workspace limpo');
+                }
+            }
+
+            // --- Renderização ---
+
+            renderNode(node) {
+                const el = document.createElement('div');
+                el.className = 'node';
+                el.id = node.id;
+                el.style.transform = `translate(${node.x}px, ${node.y}px)`;
+
+                el.innerHTML = `
+                    <div class="node-header">
+                        <span>#${node.id.split('-').pop()}</span>
+                        <button class="delete-node-btn" onclick="app.deleteNode('${node.id}')">&times;</button>
+                    </div>
+                    <div class="node-content">
+                        <textarea class="node-text" oninput="app.updateNodeContent('${node.id}', this.value)">${node.content}</textarea>
+                    </div>
+                    <div class="connection-handle" onmousedown="app.startConnection(event, '${node.id}')"></div>
+                `;
+
+                // Evento para arrastar o nó (iniciando pelo header)
+                const header = el.querySelector('.node-header');
+                header.addEventListener('mousedown', (e) => this.startDragNode(e, node.id));
+
+                this.nodesLayer.appendChild(el);
+            }
+
+            updateTransform() {
+                this.world.style.transform = `translate(${this.view.x}px, ${this.view.y}px) scale(${this.view.zoom})`;
+                // Ajuste de background para parecer infinito (opcional, mas visualmente melhor)
+                this.world.style.backgroundPosition = `${this.view.x}px ${this.view.y}px`;
+                this.world.style.backgroundSize = `${20 * this.view.zoom}px ${20 * this.view.zoom}`;
+            }
+
+            renderConnections() {
+                // Limpar linhas existentes (exceto a temporária, se houver)
+                const lines = Array.from(this.svgLayer.querySelectorAll('.connection-line'));
+                lines.forEach(l => l.remove());
+
+                this.connections.forEach(conn => {
+                    const fromNode = this.nodes.find(n => n.id === conn.from);
+                    const toNode = this.nodes.find(n => n.id === conn.to);
+                    if (!fromNode || !toNode) return;
+
+                    this.drawCurve(conn.id, fromNode, toNode);
+                });
+            }
+
+            drawCurve(id, fromNode, toNode) {
+                const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+                path.setAttribute('class', 'connection-line');
+                path.setAttribute('id', id);
+                
+                // Clique na linha para selecionar/deletar
+                path.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    if(confirm('Remover esta conexão?')) {
+                        this.connections = this.connections.filter(c => c.id !== id);
+                        this.renderConnections();
+                    }
+                });
+
+                // Calcular pontos de conexão
+                // Saída: Centro Direita do nó origem
+                const startX = fromNode.x + 240; // largura do nó
+                const startY = fromNode.y + 50;  // altura média aproximada (header + metade conteúdo)
+                
+                // Entrada: Centro Esquerda do nó destino
+                const endX = toNode.x;
+                const endY = toNode.y + 50;
+
+                // Curva de Bezier Cúbica para suavidade
+                const cp1X = startX + (50 * (startX < endX ? 1 : -1));
+                const cp1Y = startY;
+                const cp2X = endX - (50 * (startX < endX ? 1 : -1));
+                const cp2Y = endY;
+
+                const d = `M ${startX} ${startY} C ${cp1X} ${cp1Y}, ${cp2X} ${cp2Y}, ${endX} ${endY}`;
+                path.setAttribute('d', d);
+
+                this.svgLayer.appendChild(path);
+            }
+
+            // --- Interações de Arrastar e Pan ---
+
+            initEvents() {
+                // Pan (Mover o fundo)
+                this.container.addEventListener('mousedown', (e) => {
+                    if (e.target === this.container || e.target === this.world || e.target === this.svgLayer) {
+                        this.isPanning = true;
+                        this.panStart = { x: e.clientX - this.view.x, y: e.clientY - this.view.y };
+                        this.container.classList.add('grabbing');
+                    }
+                });
+
+                // Zoom (Roda do mouse)
+                this.container.addEventListener('wheel', (e) => {
+                    e.preventDefault();
+                    const zoomSensitivity = 0.001;
+                    const delta = -e.deltaY * zoomSensitivity;
+                    const newZoom = Math.min(Math.max(0.1, this.view.zoom + delta), 3);
+                    
+                    // Zoom focando no mouse (cálculo simples)
+                    // Para precisão total necessitaria calcular offset, mas para simplificar vamos zoom no centro ou ajustar view
+                    this.view.zoom = newZoom;
+                    this.updateTransform();
+                });
+
+                // Movimento Global do Mouse
+                window.addEventListener('mousemove', (e) => {
+                    // Arrastar Nó
+                    if (this.isDraggingNode && this.draggedNodeId) {
+                        const node = this.nodes.find(n => n.id === this.draggedNodeId);
+                        if (node) {
+                            // Converter delta do mouse para delta do mundo considerando o zoom
+                            const dx = (e.movementX) / this.view.zoom;
+                            const dy = (e.movementY) / this.view.zoom;
+                            
+                            node.x += dx;
+                            node.y += dy;
+
+                            const el = document.getElementById(node.id);
+                            el.style.transform = `translate(${node.x}px, ${node.y}px)`;
+                            
+                            // Atualizar linhas conectadas a este nó
+                            this.renderConnections();
+                        }
+                    }
+
+                    // Pan do Canvas
+                    if (this.isPanning) {
+                        this.view.x = e.clientX - this.panStart.x;
+                        this.view.y = e.clientY - this.panStart.y;
+                        this.updateTransform();
+                    }
+
+                    // Criando Conexão (Linha Temporária)
+                    if (this.isConnecting && this.tempLine) {
+                        const startNode = this.nodes.find(n => n.id === this.connectionStartNodeId);
+                        if (startNode) {
+                            // Ponto inicial fixo
+                            const startX = startNode.x + 240;
+                            const startY = startNode.y + 50;
+                            
+                            // Ponto atual do mouse (convertido para coordenadas do mundo)
+                            const rect = this.world.getBoundingClientRect(); // Posição visual do world
+                            // A posição do mouse relativa ao mundo é:
+                            // (mouseX - worldLeft) / scale
+                            const endX = (e.clientX - rect.left) / this.view.zoom;
+                            const endY = (e.clientY - rect.top) / this.view.zoom;
+
+                            // Desenhar linha reta simples ou curva simples para preview
+                            const d = `M ${startX} ${startY} L ${endX} ${endY}`;
+                            this.tempLine.setAttribute('d', d);
+                        }
+                    }
+                });
+
+                // Fim do Arraste
+                window.addEventListener('mouseup', () => {
+                    this.isDraggingNode = false;
+                    this.draggedNodeId = null;
+                    this.isPanning = false;
+                    this.container.classList.remove('grabbing');
+
+                    if (this.isConnecting) {
+                        // Se soltar o mouse em cima de um nó, conectar
+                        const target = document.elementFromPoint(window.event.clientX, window.event.clientY);
+                        const nodeEl = target.closest('.node');
+                        
+                        if (nodeEl && nodeEl.id !== this.connectionStartNodeId) {
+                            this.addConnection(this.connectionStartNodeId, nodeEl.id);
+                        }
+                        
+                        this.cancelConnection();
+                    }
+                });
+
+                // Atalhos de teclado
+                window.addEventListener('keydown', (e) => {
+                    // Evitar atalhos se estiver digitando em um textarea
+                    if (e.target.tagName === 'TEXTAREA') return;
+
+                    if (e.key === 'Delete' || e.key === 'Backspace') {
+                        // Deletar nó selecionado (poderíamos implementar seleção de nó no futuro)
+                        // Por enquanto, apenas deleta linhas se clicar nelas
+                    }
+                });
+            }
+
+            startDragNode(e, id) {
+                e.stopPropagation(); // Não iniciar pan
+                this.isDraggingNode = true;
+                this.draggedNodeId = id;
+            }
+
+            // --- Lógica de Conexão ---
+
+            startConnection(e, nodeId) {
+                e.stopPropagation();
+                e.preventDefault(); // Evitar seleção de texto
+                this.isConnecting = true;
+                this.connectionStartNodeId = nodeId;
+
+                // Criar linha temporária visual
+                this.tempLine = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+                this.tempLine.setAttribute('stroke', '#4f46e5');
+                this.tempLine.setAttribute('stroke-width', '2');
+                this.tempLine.setAttribute('fill', 'none');
+                this.tempLine.setAttribute('stroke-dasharray', '5,5'); // Linha tracejada
+                this.svgLayer.appendChild(this.tempLine);
+            }
+
+            cancelConnection() {
+                this.isConnecting = false;
+                this.connectionStartNodeId = null;
+                if (this.tempLine) {
+                    this.tempLine.remove();
+                    this.tempLine = null;
+                }
+            }
+
+            addConnection(fromId, toId) {
+                // Verificar se já existe
+                const exists = this.connections.find(c => c.from === fromId && c.to === toId);
+                if (!exists) {
+                    this.connections.push({
+                        id: 'conn-' + Date.now(),
+                        from: fromId,
+                        to: toId
+                    });
+                    this.renderConnections();
+                    this.showToast('Conexão criada!');
+                } else {
+                    this.showToast('Conexão já existe');
+                }
+            }
+
+            updateNodeContent(id, text) {
+                const node = this.nodes.find(n => n.id === id);
+                if (node) node.content = text;
+            }
+
+            // --- Importação / Exportação ---
+
+            exportData() {
+                const data = {
+                    version: '1.0',
+                    timestamp: new Date().toISOString(),
+                    view: this.view,
+                    nodes: this.nodes,
+                    connections: this.connections
+                };
+
+                const json = JSON.stringify(data, null, 2);
+                const blob = new Blob([json], { type: 'application/json' });
+                const url = URL.createObjectURL(blob);
+                
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = `workflow-${Date.now()}.json`;
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                URL.revokeObjectURL(url);
+                
+                this.showToast('Arquivo exportado com sucesso!');
+            }
+
+            importData(input) {
+                const file = input.files[0];
+                if (!file) return;
+
+                const reader = new FileReader();
+                reader.onload = (e) => {
+                    try {
+                        const data = JSON.parse(e.target.result);
+                        
+                        // Validação básica
+                        if (!data.nodes || !Array.isArray(data.nodes)) throw new Error('Formato inválido');
+
+                        // Restaurar estado
+                        this.nodes = data.nodes;
+                        this.connections = data.connections || [];
+                        if (data.view) this.view = data.view;
+
+                        // Re-renderizar tudo
+                        this.nodesLayer.innerHTML = '';
+                        this.nodes.forEach(n => this.renderNode(n));
+                        this.renderConnections();
+                        this.updateTransform();
+                        
+                        this.showToast('Workflow importado!');
+                        
+                        // Resetar input
+                        input.value = '';
+
+                    } catch (err) {
+                        console.error(err);
+                        this.showToast('Erro ao importar arquivo.');
+                        alert('Arquivo inválido ou corrompido.');
+                    }
+                };
+                reader.readAsText(file);
+            }
+
+            // --- UI Helpers ---
+
+            showToast(message) {
+                const container = document.getElementById('toast-container');
+                const toast = document.createElement('div');
+                toast.className = 'toast';
+                toast.textContent = message;
+                container.appendChild(toast);
+
+                // Animação entrada
+                setTimeout(() => toast.classList.add('show'), 10);
+
+                // Remover após 3s
+                setTimeout(() => {
+                    toast.classList.remove('show');
+                    setTimeout(() => toast.remove(), 300);
+                }, 3000);
+            }
+
+            toggleHelp() {
+                const modal = document.getElementById('help-modal');
+                if (modal.classList.contains('open')) {
+                    modal.classList.remove('open');
+                } else {
+                    modal.classList.add('open');
+                }
+            }
+        }
+
+        // Inicializar Aplicação
+        const app = new FlowApp();
+
+    </script>
+</body>
+</html>
